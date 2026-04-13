@@ -1,0 +1,20 @@
+{
+  "name": "arbitra",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mecanismo de pesquisa e comparação de preços entre sites da China e Brasil",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "pnpm -r run lint",
+    "test": "pnpm -r run test"
+  },
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=9"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}

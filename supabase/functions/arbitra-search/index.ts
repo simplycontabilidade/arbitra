@@ -13,7 +13,7 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return corsResponse();
 
   try {
-    const { query, categorySlug, workspaceId, userId, filters } = await req.json();
+    const { query, categorySlug, workspaceId, userId, filters, mlProducts: clientMlProducts } = await req.json();
 
     if (!query || !workspaceId || !userId) {
       return jsonResponse({ error: 'query, workspaceId e userId são obrigatórios' }, 400);
@@ -61,18 +61,29 @@ serve(async (req) => {
     }
 
     // 4. Busca China e ML em paralelo (com cache)
+    // ML: usa dados do frontend se disponíveis (browser do usuário não é bloqueado pelo ML)
     const cacheKeySuffix = `${query}:${categorySlug ?? 'all'}`;
 
-    const [chinaProducts, mlProducts] = await Promise.all([
-      withCache<ChinaProduct[]>(`china:${cacheKeySuffix}`, 24 * 3600, async () => {
-        const provider = await getChinaProvider();
-        return provider.search({ query, limit: 20 });
-      }, 'china'),
+    const chinaProducts = await withCache<ChinaProduct[]>(`china:${cacheKeySuffix}`, 24 * 3600, async () => {
+      const provider = await getChinaProvider();
+      return provider.search({ query, limit: 20 });
+    }, 'china');
 
-      withCache<MLProduct[]>(`ml:${cacheKeySuffix}`, 6 * 3600, async () => {
-        return searchMercadoLivre({ query, categoryId: mlCategoryId, limit: 50 });
-      }, 'mercado_livre'),
-    ]);
+    let mlProducts: MLProduct[];
+    if (clientMlProducts && Array.isArray(clientMlProducts) && clientMlProducts.length > 0) {
+      // Frontend mandou resultados do ML (buscou do browser do usuário)
+      mlProducts = clientMlProducts as MLProduct[];
+    } else {
+      // Fallback: tenta buscar do backend (pode falhar se IP bloqueado)
+      try {
+        mlProducts = await withCache<MLProduct[]>(`ml:${cacheKeySuffix}`, 6 * 3600, async () => {
+          return searchMercadoLivre({ query, categoryId: mlCategoryId, limit: 50 });
+        }, 'mercado_livre');
+      } catch (err) {
+        console.warn('ML search from backend failed:', err);
+        mlProducts = [];
+      }
+    }
 
     if (chinaProducts.length === 0) {
       return jsonResponse({ searchId: search.id, matches: [], message: 'Nenhum fornecedor encontrado na China' });

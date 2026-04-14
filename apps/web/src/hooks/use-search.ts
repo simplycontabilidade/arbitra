@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
+import { searchML } from '@/lib/ml-search';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useAuthStore } from '@/stores/auth';
 
@@ -21,11 +22,21 @@ export function useSearch() {
     mutationFn: async (params: SearchParams) => {
       if (!workspace || !user) throw new Error('Workspace ou usuário não encontrado');
 
+      // Busca ML do browser (IP residencial, sem bloqueio)
+      let mlProducts;
+      try {
+        mlProducts = await searchML(params.query, undefined, 50);
+      } catch (err) {
+        console.warn('ML search from browser failed, backend will try:', err);
+        mlProducts = undefined;
+      }
+
       const { data, error } = await supabase.functions.invoke('arbitra-search', {
         body: {
           ...params,
           workspaceId: workspace.id,
           userId: user.id,
+          mlProducts, // Passa resultados ML do browser
         },
       });
 

@@ -6,9 +6,48 @@ interface MLSearchParams {
   limit?: number;
 }
 
-// API pública do Mercado Livre — não requer OAuth para busca
+// Cache do access token em memória (válido por ~6h)
+let cachedToken: { token: string; expiresAt: number } | null = null;
+
+async function getMLAccessToken(): Promise<string> {
+  // Retorna token do cache se ainda válido
+  if (cachedToken && Date.now() < cachedToken.expiresAt) {
+    return cachedToken.token;
+  }
+
+  const appId = Deno.env.get('ML_APP_ID');
+  const clientSecret = Deno.env.get('ML_CLIENT_SECRET');
+
+  if (!appId || !clientSecret) {
+    throw new Error('ML_APP_ID e ML_CLIENT_SECRET são obrigatórios');
+  }
+
+  const res = await fetch('https://api.mercadolibre.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: appId,
+      client_secret: clientSecret,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`ML OAuth error: ${res.status} ${await res.text()}`);
+  }
+
+  const data = await res.json();
+  cachedToken = {
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in - 300) * 1000, // 5min de margem
+  };
+
+  return cachedToken.token;
+}
+
 export async function searchMercadoLivre(params: MLSearchParams): Promise<MLProduct[]> {
   const { query, categoryId, limit = 50 } = params;
+  const token = await getMLAccessToken();
 
   let url = `https://api.mercadolibre.com/sites/MLB/search?q=${encodeURIComponent(query)}&limit=${limit}&condition=new`;
 
@@ -16,7 +55,9 @@ export async function searchMercadoLivre(params: MLSearchParams): Promise<MLProd
     url += `&category=${categoryId}`;
   }
 
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
 
   if (!res.ok) {
     throw new Error(`ML API error: ${res.status} ${await res.text()}`);

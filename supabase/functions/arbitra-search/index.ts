@@ -7,6 +7,7 @@ import { supabaseAdmin } from '../_shared/supabase-client.ts';
 import { checkAndIncrementUsage } from '../_shared/rate-limit.ts';
 import { withCache } from '../_shared/cache.ts';
 import { corsHeaders, corsResponse, jsonResponse } from '../_shared/cors.ts';
+import { translateQueryToChinese } from '../_shared/translate.ts';
 import type { ChinaProduct, MLProduct } from '../_shared/types.ts';
 
 serve(async (req) => {
@@ -60,13 +61,17 @@ serve(async (req) => {
       mlCategoryId = cat?.ml_category_id ?? undefined;
     }
 
-    // 4. Busca China e ML em paralelo (com cache)
+    // 4. Traduz query para chinês (busca no 1688/Alibaba precisa ser em mandarim)
+    const queryZh = await translateQueryToChinese(query);
+    console.log(`Query traduzida: "${query}" -> "${queryZh}"`);
+
+    // 5. Busca China e ML em paralelo (com cache)
     // ML: usa dados do frontend se disponíveis (browser do usuário não é bloqueado pelo ML)
     const cacheKeySuffix = `${query}:${categorySlug ?? 'all'}`;
 
     const chinaProducts = await withCache<ChinaProduct[]>(`china:${cacheKeySuffix}`, 24 * 3600, async () => {
       const provider = await getChinaProvider();
-      return provider.search({ query, limit: 20 });
+      return provider.search({ query: queryZh, limit: 20 });
     }, 'china');
 
     let mlProducts: MLProduct[];

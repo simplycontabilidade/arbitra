@@ -22,12 +22,13 @@ export function useSearch() {
     mutationFn: async (params: SearchParams) => {
       if (!workspace || !user) throw new Error('Workspace ou usuário não encontrado');
 
-      // Busca ML do browser (IP residencial, sem bloqueio)
+      // Busca ML do browser (IP residencial, sem bloqueio pelo ML)
       let mlProducts;
       try {
         mlProducts = await searchML(params.query, undefined, 50);
+        console.log(`ML: ${mlProducts.length} resultados do browser`);
       } catch (err) {
-        console.warn('ML search from browser failed, backend will try:', err);
+        console.warn('ML search from browser failed:', err);
         mlProducts = undefined;
       }
 
@@ -36,11 +37,24 @@ export function useSearch() {
           ...params,
           workspaceId: workspace.id,
           userId: user.id,
-          mlProducts, // Passa resultados ML do browser
+          mlProducts,
         },
       });
 
-      if (error) throw error;
+      // supabase.functions.invoke retorna error como FunctionsHttpError
+      // mas o body pode ter dados úteis mesmo com erro
+      if (error) {
+        // Tenta extrair mensagem do body de erro
+        const errorBody = data ?? {};
+        const message = errorBody.message ?? errorBody.error ?? error.message ?? 'Erro na busca';
+        throw new Error(message);
+      }
+
+      // Verifica se a resposta tem erro embutido (status 4xx/5xx retornado como JSON)
+      if (data?.error) {
+        throw new Error(data.message ?? data.error);
+      }
+
       return data;
     },
   });

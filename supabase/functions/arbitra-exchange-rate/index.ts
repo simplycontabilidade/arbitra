@@ -56,7 +56,23 @@ serve(async () => {
         }
 
         if (!found) {
-          results.push({ currency: cur, error: 'Nenhuma cotação encontrada nos últimos 5 dias' });
+          // CNY não tem PTAX direta — calcula cross-rate via USD
+          if (cur === 'CNY') {
+            const cnyRate = await getCnyCrossRate();
+            if (cnyRate) {
+              await supabaseAdmin.from('exchange_rates').insert({
+                currency_from: 'CNY',
+                currency_to: 'BRL',
+                rate: cnyRate,
+                source: 'cross_rate',
+              });
+              results.push({ currency: 'CNY', rate: cnyRate, note: 'cross-rate via USD' });
+            } else {
+              results.push({ currency: cur, error: 'Nenhuma cotação encontrada' });
+            }
+          } else {
+            results.push({ currency: cur, error: 'Nenhuma cotação encontrada nos últimos 5 dias' });
+          }
         }
       }
     } catch (err) {
@@ -66,3 +82,32 @@ serve(async () => {
 
   return jsonResponse({ updated: results });
 });
+
+// Calcula CNY/BRL via cross-rate: busca USD/BRL do banco + USD/CNY de API externa
+async function getCnyCrossRate(): Promise<number | null> {
+  try {
+    // Busca última cotação USD/BRL
+    const { data: usdRow } = await supabaseAdmin
+      .from('exchange_rates')
+      .select('rate')
+      .eq('currency_from', 'USD')
+      .order('fetched_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!usdRow) return null;
+    const usdBrl = Number(usdRow.rate);
+
+    // Busca USD/CNY de API pública (exchangerate.host ou similar)
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    const data = await res.json();
+    const usdCny = data.rates?.CNY;
+
+    if (!usdCny) return null;
+
+    // CNY/BRL = USD/BRL / USD/CNY
+    return Math.round((usdBrl / usdCny) * 1000000) / 1000000;
+  } catch {
+    return null;
+  }
+}

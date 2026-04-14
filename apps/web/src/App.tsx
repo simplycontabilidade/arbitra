@@ -12,6 +12,7 @@ import { DashboardPage } from '@/pages/DashboardPage';
 import { SimulatorPage } from '@/pages/SimulatorPage';
 import { BillingPage } from '@/pages/BillingPage';
 import { LandingPage } from '@/pages/LandingPage';
+import { SettingsPage } from '@/pages/SettingsPage';
 
 function AuthPage({ children }: { children: React.ReactNode }) {
   return (
@@ -48,7 +49,7 @@ export function App() {
         <Route path="history" element={<HistoryPage />} />
         <Route path="simulator" element={<SimulatorPage />} />
         <Route path="dashboard" element={<DashboardPage />} />
-        <Route path="settings" element={<PlaceholderPage title="Configurações" />} />
+        <Route path="settings" element={<SettingsPage />} />
         <Route path="settings/billing" element={<BillingPage />} />
         <Route path="settings/*" element={<PlaceholderPage title="Configurações" />} />
       </Route>

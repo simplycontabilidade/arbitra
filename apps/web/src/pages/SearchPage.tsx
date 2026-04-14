@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import type { SearchInput } from '@arbitra/shared';
 import { useSearch } from '@/hooks/use-search';
 import { SearchBar } from '@/components/search/SearchBar';
@@ -6,9 +7,16 @@ import { SearchProgress } from '@/components/search/SearchProgress';
 import { ResultsTable } from '@/components/search/ResultsTable';
 import { SearchHistory } from '@/components/search/SearchHistory';
 
+interface SearchResponse {
+  searchId: string;
+  matches: unknown[];
+  ml_status?: string;
+  message?: string;
+}
+
 export function SearchPage() {
   const search = useSearch();
-  const [results, setResults] = useState<{ searchId: string; matches: unknown[] } | null>(null);
+  const [results, setResults] = useState<SearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSearch(data: SearchInput) {
@@ -16,10 +24,9 @@ export function SearchPage() {
       setError(null);
       setResults(null);
       const result = await search.mutateAsync(data);
-      setResults(result);
+      setResults(result as SearchResponse);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Erro na busca';
-      // Tenta extrair mensagem de erro JSON do Supabase
       try {
         const parsed = JSON.parse(message);
         setError(parsed.message ?? parsed.error ?? message);
@@ -29,7 +36,7 @@ export function SearchPage() {
     }
   }
 
-  function handleHistorySelect(searchId: string, query: string) {
+  function handleHistorySelect(_searchId: string, query: string) {
     handleSearch({ query });
   }
 
@@ -51,6 +58,19 @@ export function SearchPage() {
       )}
 
       {search.isPending && <SearchProgress />}
+
+      {results && results.ml_status === 'unavailable' && (
+        <div className="flex items-start gap-3 rounded-lg border border-yellow-200 bg-yellow-50 p-4 text-sm">
+          <AlertTriangle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium text-yellow-800">Dados do Mercado Livre indisponíveis</p>
+            <p className="text-yellow-700 mt-1">
+              Os preços de venda são estimados. Para comparação real, conecte sua conta do Mercado Livre
+              em Configurações &gt; Integrações.
+            </p>
+          </div>
+        </div>
+      )}
 
       {results && results.matches.length > 0 && (
         <div>

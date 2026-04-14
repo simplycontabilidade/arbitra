@@ -61,7 +61,14 @@ serve(async (req) => {
       mlCategoryId = cat?.ml_category_id ?? undefined;
     }
 
-    // 4. Traduz query para chinês (busca no 1688/Alibaba precisa ser em mandarim)
+    // 4. Carrega config do workspace
+    const { data: workspace } = await supabaseAdmin
+      .from('workspaces')
+      .select('default_import_regime, default_entry_port, default_ttd_409')
+      .eq('id', workspaceId)
+      .single();
+
+    // 5. Traduz query para chinês (busca no 1688/Alibaba precisa ser em mandarim)
     const queryZh = await translateQueryToChinese(query);
     console.log(`Query traduzida: "${query}" -> "${queryZh}"`);
 
@@ -74,18 +81,29 @@ serve(async (req) => {
       return provider.search({ query: queryZh, limit: 20 });
     }, 'china');
 
+    // ML: usa dados do frontend se disponíveis, senão busca via proxy Edge Function
     let mlProducts: MLProduct[];
     if (clientMlProducts && Array.isArray(clientMlProducts) && clientMlProducts.length > 0) {
-      // Frontend mandou resultados do ML (buscou do browser do usuário)
       mlProducts = clientMlProducts as MLProduct[];
     } else {
-      // Fallback: tenta buscar do backend (pode falhar se IP bloqueado)
       try {
         mlProducts = await withCache<MLProduct[]>(`ml:${cacheKeySuffix}`, 6 * 3600, async () => {
-          return searchMercadoLivre({ query, categoryId: mlCategoryId, limit: 50 });
+          // Chama o proxy ML que usa token OAuth armazenado
+          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+          const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+          const mlRes = await fetch(`${supabaseUrl}/functions/v1/arbitra-search-ml`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${serviceKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ query, categoryId: mlCategoryId, limit: 50 }),
+          });
+          const mlData = await mlRes.json();
+          return mlData.results ?? [];
         }, 'mercado_livre');
       } catch (err) {
-        console.warn('ML search from backend failed:', err);
+        console.warn('ML search failed:', err);
         mlProducts = [];
       }
     }
@@ -94,8 +112,48 @@ serve(async (req) => {
       return jsonResponse({ searchId: search.id, matches: [], message: 'Nenhum fornecedor encontrado na China' });
     }
 
+    // Se ML não retornou resultados, retorna produtos China com estimativa
     if (mlProducts.length === 0) {
-      return jsonResponse({ searchId: search.id, matches: [], message: 'Nenhum produto encontrado no Mercado Livre' });
+      const enrichedChinaOnly = await Promise.all(
+        chinaProducts.map(async (cp) => {
+          try {
+            const landedCost = await calculateLandedCost({
+              priceCny: cp.priceCny,
+              regime: workspace?.default_import_regime ?? 'remessa_conforme',
+              state: workspace?.default_entry_port ?? 'SP',
+              ttd409: workspace?.default_ttd_409 ?? false,
+            });
+            // Estima preço ML como 3x o landed cost (margem média de mercado)
+            const estimatedMlPrice = landedCost.total_brl * 3;
+            const marginPct = ((estimatedMlPrice - landedCost.total_brl) / estimatedMlPrice) * 100;
+            return {
+              chinaProduct: cp,
+              mlProducts: [],
+              mlMedianPrice: estimatedMlPrice,
+              mlAvgSoldQuantity: 0,
+              matchConfidence: 0,
+              matchReasoning: 'Sem dados do Mercado Livre — preço estimado. Conecte sua conta ML para dados reais.',
+              landedCostBrl: landedCost.total_brl,
+              landedCostBreakdown: landedCost,
+              marginPct: Math.round(marginPct * 100) / 100,
+              markupPct: Math.round(((estimatedMlPrice - landedCost.total_brl) / landedCost.total_brl) * 10000) / 100,
+              opportunityScore: 0,
+              estimated: true,
+            };
+          } catch { return null; }
+        }),
+      );
+      const filtered = enrichedChinaOnly.filter(Boolean);
+
+      await supabaseAdmin.from('searches').update({ total_results: filtered.length }).eq('id', search.id);
+
+      return jsonResponse({
+        searchId: search.id,
+        matches: filtered,
+        ml_status: 'unavailable',
+        message: 'Dados do Mercado Livre indisponíveis. Conecte sua conta ML em Configurações para comparação real.',
+        usage: { plan: usageCheck.plan, remaining: usageCheck.remaining },
+      });
     }
 
     // 5. Persiste produtos no banco (cache de dados)
@@ -114,12 +172,6 @@ serve(async (req) => {
     }
 
     // 7. Calcula landed cost pra cada match
-    const { data: workspace } = await supabaseAdmin
-      .from('workspaces')
-      .select('default_import_regime, default_entry_port, default_ttd_409')
-      .eq('id', workspaceId)
-      .single();
-
     const enrichedMatches = await Promise.all(
       matches.map(async (m) => {
         try {

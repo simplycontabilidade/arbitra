@@ -4,72 +4,124 @@ export class RapidApi1688Provider implements ChinaSourceProvider {
   readonly name = 'rapidapi_1688';
 
   async search(query: ChinaSearchQuery): Promise<ChinaProduct[]> {
-    const host = Deno.env.get('RAPIDAPI_HOST_1688');
+    const host = Deno.env.get('RAPIDAPI_HOST_1688') ?? '1688-product2.p.rapidapi.com';
     const key = Deno.env.get('RAPIDAPI_KEY');
 
-    if (!host || !key) {
-      throw new Error('RAPIDAPI_HOST_1688 e RAPIDAPI_KEY são obrigatórios');
+    if (!key) {
+      throw new Error('RAPIDAPI_KEY é obrigatório');
     }
 
-    const url = `https://${host}/search?keyword=${encodeURIComponent(query.query)}&page=1&pageSize=${query.limit ?? 20}`;
+    const keyword = encodeURIComponent(query.query);
+    const url = `https://${host}/1688/search/items?keyword=${keyword}&page=1&sort=default`;
+
     const res = await fetch(url, {
       headers: {
         'x-rapidapi-key': key,
         'x-rapidapi-host': host,
+        'Content-Type': 'application/json',
       },
     });
 
     if (!res.ok) {
-      throw new Error(`1688 API error: ${res.status} ${await res.text()}`);
+      const text = await res.text();
+      throw new Error(`1688 API error: ${res.status} ${text}`);
     }
 
     const data = await res.json();
-    return this.normalize(data);
+
+    if (data.code !== 200 || !data.data?.items) {
+      throw new Error(`1688 API error: ${data.msg ?? 'unknown'}`);
+    }
+
+    return this.normalize(data.data.items).slice(0, query.limit ?? 20);
   }
 
   async getProduct(externalId: string): Promise<ChinaProduct | null> {
-    const host = Deno.env.get('RAPIDAPI_HOST_1688');
+    const host = Deno.env.get('RAPIDAPI_HOST_1688') ?? '1688-product2.p.rapidapi.com';
     const key = Deno.env.get('RAPIDAPI_KEY');
 
-    if (!host || !key) return null;
+    if (!key) return null;
 
-    const url = `https://${host}/detail?id=${encodeURIComponent(externalId)}`;
-    const res = await fetch(url, {
-      headers: {
-        'x-rapidapi-key': key,
-        'x-rapidapi-host': host,
-      },
-    });
+    try {
+      const url = `https://${host}/1688/product/detail?item_id=${externalId}`;
+      const res = await fetch(url, {
+        headers: {
+          'x-rapidapi-key': key,
+          'x-rapidapi-host': host,
+          'Content-Type': 'application/json',
+        },
+      });
 
-    if (!res.ok) return null;
+      if (!res.ok) return null;
 
-    const data = await res.json();
-    const items = this.normalize({ items: [data.item ?? data] });
-    return items[0] ?? null;
+      const data = await res.json();
+      if (data.code !== 200 || !data.data) return null;
+
+      const item = data.data;
+      return {
+        source: '1688' as const,
+        externalId: String(item.item_id ?? externalId),
+        titleZh: item.title ?? '',
+        titlePt: undefined,
+        mainImageUrl: item.img ?? item.images?.[0],
+        images: item.images ?? [],
+        priceCny: parseFloat(item.price ?? '0'),
+        priceTiers: item.quantity_prices?.map((t: Record<string, unknown>) => ({
+          minQty: Number(t.begin_num ?? 1),
+          price: parseFloat(String(t.price ?? '0')),
+        })),
+        moq: item.moq ? Number(item.moq) : undefined,
+        currency: 'CNY',
+        vendorName: item.shop_info?.company_name ?? item.shop_info?.login_id,
+        vendorVerified: item.shop_info?.is_factory === true,
+        vendorYears: item.shop_info?.shop_years,
+        vendorRating: item.goods_score ? parseFloat(item.goods_score) : undefined,
+        productUrl: item.product_url ?? `https://detail.1688.com/offer/${externalId}.html`,
+        specs: item.attributes ?? {},
+      };
+    } catch {
+      return null;
+    }
   }
 
-  // Adaptar conforme schema real do RapidAPI wrapper escolhido
-  private normalize(raw: Record<string, unknown>): ChinaProduct[] {
-    const items = (raw.items ?? raw.data ?? raw.result ?? []) as Record<string, unknown>[];
+  private normalize(items: Record<string, unknown>[]): ChinaProduct[] {
+    return items
+      .filter((item) => !item.is_ad) // Filtra anúncios pagos
+      .map((item) => {
+        const shopInfo = item.shop_info as Record<string, unknown> | undefined;
+        const saleInfo = item.sale_info as Record<string, unknown> | undefined;
+        const priceInfo = item.price_info as Record<string, unknown> | undefined;
+        const quantityPrices = item.quantity_prices as Array<Record<string, unknown>> | undefined;
 
-    return items.map((item) => ({
-      source: '1688' as const,
-      externalId: String(item.id ?? item.offerId ?? ''),
-      titleZh: String(item.title ?? item.subject ?? ''),
-      titlePt: undefined,
-      mainImageUrl: String(item.image ?? item.imageUrl ?? item.img ?? ''),
-      images: Array.isArray(item.images) ? item.images.map(String) : [],
-      priceCny: parseFloat(String(item.price ?? item.priceRange ?? '0')),
-      priceTiers: Array.isArray(item.price_tiers) ? item.price_tiers as ChinaProduct['priceTiers'] : undefined,
-      moq: item.moq ? Number(item.moq) : undefined,
-      currency: 'CNY',
-      vendorId: item.seller_id ? String(item.seller_id) : undefined,
-      vendorName: item.seller_name ? String(item.seller_name) : undefined,
-      vendorVerified: item.verified === true,
-      vendorYears: item.years ? Number(item.years) : undefined,
-      vendorRating: item.rating ? Number(item.rating) : undefined,
-      productUrl: String(item.detail_url ?? item.url ?? ''),
-      specs: (item.attrs ?? item.attributes ?? {}) as Record<string, unknown>,
-    }));
+        return {
+          source: '1688' as const,
+          externalId: String(item.item_id ?? ''),
+          titleZh: String(item.title ?? ''),
+          titlePt: undefined,
+          mainImageUrl: String(item.img ?? ''),
+          images: [String(item.img ?? '')],
+          priceCny: parseFloat(String(priceInfo?.sale_price ?? item.price ?? '0')),
+          priceTiers: quantityPrices?.map((t) => ({
+            minQty: Number(t.begin_num ?? 1),
+            price: parseFloat(String(t.price ?? '0')),
+          })),
+          moq: item.moq ? Number(item.moq) : (item.quantity_begin ? Number(item.quantity_begin) : undefined),
+          currency: 'CNY',
+          vendorId: shopInfo?.member_id ? String(shopInfo.member_id) : undefined,
+          vendorName: (shopInfo?.company_name ?? shopInfo?.login_id) ? String(shopInfo?.company_name ?? shopInfo?.login_id) : undefined,
+          vendorVerified: shopInfo?.is_factory === true || shopInfo?.is_super_factory === true,
+          vendorYears: shopInfo?.shop_years ? Number(shopInfo.shop_years) : undefined,
+          vendorRating: item.goods_score ? parseFloat(String(item.goods_score)) : undefined,
+          productUrl: String(item.product_url ?? `https://detail.1688.com/offer/${item.item_id}.html`),
+          specs: {
+            sold_quantity: saleInfo?.sale_quantity_int ?? 0,
+            orders_count: saleInfo?.orders_count ?? 0,
+            location: (item.delivery_info as Record<string, unknown>)?.area_from ?? [],
+            tags: item.tags ?? [],
+            rating_star: item.rating_star,
+            repurchase_rate: item.item_repurchase_rate,
+          },
+        };
+      });
   }
 }
